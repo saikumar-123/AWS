@@ -1,0 +1,198 @@
+#!/usr/bin/env groovy
+def wspace = new Workspace()
+def ose = new Openshift()
+def build = new Build()
+
+def APP_NAME = null
+def Project = null
+def APP_VERSION = null
+def APP_RELEASE_TAG = null
+def dockerRegistry = 'docker-registry.com/tsta'
+def mergeComments = ''
+def PROP_PREFIX = null
+pipeline {
+  agent {
+    label "nodejs"
+  }
+
+  triggers {
+    gitlab(
+      triggerOnPush: true,
+      triggerOnMergeRequest: true,
+      branchFilterType: 'RegexBasedFilter',
+      targetBranchRegex: '(.*release.*|.*master.*)'
+    )
+  }
+  tools {
+    nodejs "Nodejs-10.13.0"
+  }
+  environment {
+    MAIL_TO="doppalapudisaikumar@gmail.com"
+    TEST_PROJECT_NAME="tsta"
+  }
+  options {
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '30', daysToKeepStr: '90'))
+    gitLabConnection('git_account')
+    gitlabCommitStatus(name: 'jenkins')
+    skipDefaultCheckout(true)
+    timestamps()
+    skipStagesAfterUnstable()
+  }
+  parameters {
+    choice(choices: 'TEST\nTEST-B\nTEST-C\nSTAGE\nPROD', description: 'Which Pipeline to deploy to?', name: 'PIPELINE')
+    string (
+        name : 'RELEASE_VERSION',
+        defaultValue: 'latest',
+        description: '[Optional] Application Docker release tag (e.g. latest, 1.0.0.15). Please use this if you need to deploy to stage or production (If left blank, new build and deploy to test will be made).'
+    )
+    string(defaultValue: '', description: 'Git Commit Hash that will be tagged after PROD Deploy(e.g. 9fceb02', name: 'GitHash')
+    
+  }
+  stages {
+    stage('Setup') {
+      steps {
+        deleteDir()
+        checkout scm
+        echo "env.BRANCH_NAME ${env.gitlabSourceBranch} gitlabTargetBranch ${env.gitlabTargetBranch}"
+        script {
+          echo "Explicit scm checkout ..."
+          wspace.init()
+          sh 'git rev-parse HEAD > commit'
+          GIT_COMMIT = readFile('commit').trim()
+          sh 'git config --get remote.origin.url > url'
+          GIT_URL = readFile('url').trim()
+          Project = 'advanced-nginx'
+          APP_VERSION = "1.0.0"
+          if (RELEASE_VERSION == 'latest') {
+            APP_RELEASE_TAG="${APP_VERSION}.${BUILD_NUMBER}"
+          } else {
+            APP_RELEASE_TAG="${RELEASE_VERSION}"            
+          }
+          if (params.PIPELINE == 'TEST') {
+            APP_NAME= "${Project}"
+            PROP_PREFIX="tsta"
+          } else if (params.PIPELINE == 'TEST-B') {
+            APP_NAME= "${Project}-b"
+            PROP_PREFIX="tstb"
+          } else if (params.PIPELINE == 'TEST-C') {
+            APP_NAME= "${Project}-c"
+            PROP_PREFIX="tstc"
+          }
+          echo "APP_NAME='${APP_NAME}', APP_VERSION='${APP_VERSION}', RELEASE_VERSION='${RELEASE_VERSION}', APP_RELEASE_TAG='${APP_RELEASE_TAG}''"
+          currentBuild.description = "${currentBuild.description} ${PIPELINE}: ${APP_RELEASE_TAG} "
+        }
+      }
+    }
+    stage('Build Image') {
+      steps {
+        echo "building image"
+        script {
+          ose.dockerLoginDev()
+          def now = new Date()
+          def createdDate = now.format("yyyy-MM-dd'T'HH:mm:ssZ")
+          sh """
+            sudo docker build \
+            --build-arg nginx_folder=${params.PIPELINE} \
+            --build-arg GIT_COMMIT=${GIT_COMMIT} \
+            -t ${dockerRegistry}/${APP_NAME}:latest -t ${dockerRegistry}/${APP_NAME}:${APP_RELEASE_TAG} . \
+            --label "org.opencontainers.image.revision=${GIT_COMMIT}" \
+            --label "org.opencontainers.image.created=${createdDate}" \
+            --label "org.opencontainers.image.source=${GIT_URL}" \
+            --label "org.opencontainers.image.version=${APP_RELEASE_TAG}"
+            sudo docker push ${dockerRegistry}/${APP_NAME}
+            sudo docker images -a | grep ${APP_NAME} | awk '{print \$3}' | xargs sudo docker rmi --force || exit 0
+
+	        """
+        }
+      }
+    }
+    stage('Deploy: Test') {
+      when {
+        allOf {
+          not { environment name: 'gitlabActionType', value: 'MERGE' }
+          expression { params.PIPELINE == 'TEST' || params.PIPELINE == 'TEST-B' || params.PIPELINE == 'TEST-C' }
+        }
+      }
+      steps {
+        sh "rm -rf /prod/cm/pvc/jenkins/workspace/cdt/cdt-test-pipeline/.kube/config"
+        script {
+          env.KUBECONFIG = env.WORKSPACE +'/.kube/config'
+          env.DOCKER_CONFIG = env.WORKSPACE +'/.docker/config'
+        }
+        
+          // script {
+          //   imgsha256 = sh( "$(oc get istag/${APP_NAME}:latest --template='{{ .image.metadata.name }}'")
+          //   sh ("oc label image ${imgsha256} GIT_COMMIT=${GIT_COMMIT}")
+          //   // ose.dockerLoginDev()
+          //   sh (" oc label image ${imgsha256} --output="gittag.yml"")
+          //   // gittag = sh ("oc get image ${imgsha256} --show-labels > gittag") 
+          //   // sh (" sudo docker inspect ${APP_NAME}:${APP_RELEASE_TAG} | jq -r '.[0].Config.Labels[\"org.opencontainers.image.revision\"]' > gittag")
+          //   // gittag = sh ("sudo docker inspect -f '{{ index .Config.Labels \"org.opencontainers.image.revision\" }}' ${APP_NAME}:${APP_RELEASE_TAG}")
+          //   git = readYaml file: gittag
+          //   GitHash = git.GIT_COMMIT
+          //   echo "${GitHash}"
+          // }
+          sh """
+            ose.dockerLoginDev()
+            oc process -f ./cfg/deploytemplate.yml -p TAG=${APP_RELEASE_TAG} --param-file=./cfg/${PROP_PREFIX}.app.properties --param-file=./cfg/app.properties -n=${TEST_PROJECT_NAME} > deployconfig.yml
+            oc apply -f deployconfig.yml
+            oc set image dc/${APP_NAME} ${APP_NAME}=${TEST_PROJECT_NAME}/${APP_NAME}:${APP_RELEASE_TAG} --source=imagestreamtag -n=${TEST_PROJECT_NAME}
+            /bin/oc rollout latest dc/${APP_NAME} -n=${TEST_PROJECT_NAME}
+            oc rollout status dc/${APP_NAME} --watch=true -n=${TEST_PROJECT_NAME} 
+          """          
+        }
+      }
+    }
+    stage('Deploy: stage-ose') {
+      when { expression { params.PIPELINE == 'STAGE' } }
+      steps {
+        echo 'deploy to stage'
+      }
+    }
+    stage('Deploy: prod') {
+      when { expression { params.PIPELINE == 'PROD' } }
+      steps {
+        echo 'deploy to Prod'     
+      }
+      post {
+        success {
+          echo "----------- TAGGING THE RELEASE v${APP_RELEASE_TAG} IN GIT -----------------"
+            sh """
+              git tag -a v${APP_VERSION} ${GitHash} -m "RELEASE_VERSION:${RELEASE_VERSION}"
+              git push --tags
+            """
+        }
+      }
+	  }
+  }
+  post {
+    always {
+      script {
+        emailSubject = (env.gitlabActionType == 'MERGE') ? "MERGE Build status ${currentBuild.currentResult}" : "Jenkins ${params.PIPELINE} Deploy"
+        passVal = (currentBuild.currentResult == 'SUCCESS') ? "Passing" : "Failing"
+        emailBody1 = (env.gitlabActionType == 'MERGE') ? "<h3>Merge request by ${gitlabUserName} is ${passVal}</h3>" : "<h3>${params.PIPELINE} Deploy</h3>"
+        emailBody1 += (env.gitlabActionType == 'MERGE') ? "<pre>${mergeComments}</pre>" : ""
+        emailBody = "<p>${emailBody1} <h4>${currentBuild.fullDisplayName} status: ${currentBuild.currentResult}</h4>"
+        if(currentBuildExtended.changeSets.size() > 0) {
+	        emailBody += "<dl><dt><b>Commits in this Build :</b></dt>"
+	        for (changeSet in currentBuildExtended.changeSets) {
+              emailBody += "<dd><li>${changeSet.author} : <b>${changeSet.comment}</b></li></dd>"
+          }
+          emailBody += "</dl>"
+        }
+        emailBody += "<p>Build took ${currentBuild.durationString}</p>"
+        emailBody += "<p>${env.BUILD_URL}console</p>"
+      }
+
+      mail(to: "${MAIL_TO}",
+        subject: "${emailSubject} ${currentBuild.fullDisplayName}",
+        mimeType: 'text/html',
+        body: "${emailBody}"
+      )
+      echo "Cleaning up workspace"
+      // deleteDir()
+      cleanWs()
+      echo "Finished Cleaning up workspace"
+    }
+  }

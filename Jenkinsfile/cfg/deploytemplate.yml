@@ -1,0 +1,143 @@
+apiVersion: v1
+kind: Template
+parameters:
+  - name: APPLICATION_NAME
+  # - name: CONTAINER_NAME
+  - name: ROUTE_HOST
+  - name: OSE_DEPLOY_PROJECT
+  - name: TAG
+  - name: NODE_ENV
+  - name: AUTO_SCALE_MIN_REPLICAS
+  - name: AUTO_SCALE_MAX_REPLICAS
+  - name: CPU_SCALING_TARGET_PCTG
+  - name: REQ_CPU_RES
+  - name: REQ_MEM_RES
+  - name: LMT_CPU_RES
+  - name: LMT_MEM_RES
+  #- name: PROBE_URL
+  #- name: CONFIG_MAP_REF
+  #- name: SECRETS_REF
+metadata:
+  name: ${APPLICATION_NAME}
+  labels:
+    app: ${APPLICATION_NAME}
+objects:
+  - apiVersion: v1
+    kind: DeploymentConfig
+    metadata:
+      labels:
+        app: ${APPLICATION_NAME}
+      name: ${APPLICATION_NAME}
+    spec:
+      replicas: 1
+      test: false
+      selector:
+        app: ${APPLICATION_NAME}
+        deploymentconfig: ${APPLICATION_NAME}
+      strategy:
+        type: Rolling
+        resources: {}
+        rollingParams:
+          updatePeriodSeconds: 1
+          intervalSeconds: 1
+          timeoutSeconds: 600
+      template:
+        metadata:
+          labels:
+            app: ${APPLICATION_NAME}
+            deploymentconfig: ${APPLICATION_NAME}
+            splunk_filter_type: filter
+        spec:
+          volumes:
+            - name: cert-volume
+              persistentVolumeClaim:
+                claimName: ${PVC}
+          containers:
+            - env:
+                - name: APPLICATION_NAME
+                  value: ${APPLICATION_NAME}
+                - name: TAG
+                  value: ${TAG}
+                - name: NODE_ENV
+                  value: ${NODE_ENV}
+              image: ${APPLICATION_NAME}
+              # envFrom:
+              #   - configMapRef:
+              #       name: ${CONFIG_MAP_REF}
+              #   - secretRef:
+              #       name: ${SECRETS_REF}
+              name: ${APPLICATION_NAME}
+              ports:
+                - containerPort: 8080
+                  protocol: TCP
+                - containerPort: 8443
+                  protocol: TCP
+              resources:
+                limits:
+                  cpu: ${LMT_CPU_RES}
+                  memory: ${LMT_MEM_RES}
+                requests:
+                  cpu: ${REQ_CPU_RES}
+                  memory: ${REQ_MEM_RES}
+      triggers:
+        - imageChangeParams:
+            automatic: false
+            containerNames:
+              - ${APPLICATION_NAME}
+            from:
+              kind: ImageStreamTag
+              namespace: ${OSE_DEPLOY_PROJECT}
+              name: ${APPLICATION_NAME}:${TAG}
+          type: ImageChange
+    status: {}
+  - apiVersion: autoscaling/v1
+    kind: HorizontalPodAutoscaler
+    metadata:
+      labels:
+        app: ${APPLICATION_NAME}
+      name: ${APPLICATION_NAME}
+    spec:
+      minReplicas: ${{AUTO_SCALE_MIN_REPLICAS}}
+      maxReplicas: ${{AUTO_SCALE_MAX_REPLICAS}}
+      scaleTargetRef:
+        apiVersion: v1
+        kind: DeploymentConfig
+        name: ${APPLICATION_NAME}
+      targetCPUUtilizationPercentage: ${{CPU_SCALING_TARGET_PCTG}}
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      labels:
+        app: ${APPLICATION_NAME}
+      name: ${APPLICATION_NAME}
+      namespace: ${OSE_DEPLOY_PROJECT}
+    spec:
+      ports:
+        - name: 8080-tcp
+          port: 8080
+          protocol: TCP
+          targetPort: 8080
+        - name: 8443-tcp
+          port: 8443
+          protocol: TCP
+          targetPort: 8443
+      selector:
+        app: ${APPLICATION_NAME}
+        deploymentconfig: ${APPLICATION_NAME}
+      type: ClusterIP
+      sessionAffinity: None
+    status:
+      loadBalancer: {}
+  - apiVersion: v1
+    kind: Route
+    metadata:
+      labels:
+        app: ${APPLICATION_NAME}
+      name: ${APPLICATION_NAME}
+    spec:
+      host: ${ROUTE_HOST}
+      port:
+        targetPort: 8080-tcp
+      to:
+        kind: Service
+        name: ${APPLICATION_NAME}

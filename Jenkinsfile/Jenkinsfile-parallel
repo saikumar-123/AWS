@@ -1,0 +1,210 @@
+#!/usr/bin/env groovy
+final ws = new Workspace()
+final ose = new Openshift()
+final build = new Build()
+
+final DOCKER_REGISTRY = 'docker-registry.ose.com/tsta'
+def APP_NAME = null
+def APP_VERSION = null
+def APP_RELEASE_TAG = null
+def emailBody = null
+def mergeComments = ''
+def GIT_COMMIT = null
+def GIT_URL = null
+def NODE_DIR = null
+pipeline {
+  agent { label "nodejs || gcc" }
+  tools { nodejs "Nodejs-10.13.0" }
+
+  triggers {
+    gitlab(
+      triggerOnPush: true,
+      triggerOnMergeRequest: true,
+      branchFilterType: 'RegexBasedFilter',
+      targetBranchRegex: '(.*release.*|.*master.*)'
+    )
+  }
+  environment {
+    MAIL_TO="doppalapudisaikumar@gmail.com"
+    TEST_ACCOUNT = "sai@172.0.0.0"
+  }
+  options {
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '30', daysToKeepStr: '100'))
+    gitLabConnection('Gitlab_prod')
+    gitlabCommitStatus(name: 'jenkins')
+    skipDefaultCheckout(true)
+    timestamps()
+    skipStagesAfterUnstable()
+  }
+  parameters {
+    choice(choices: 'TEST\nSTAGE\nPROD', description: 'Which Pipeline to deploy to?', name: 'PIPELINE')
+    string (
+        name : 'RELEASE_VERSION',
+        defaultValue: 'latest',
+        description: 'Application Docker release tag (e.g. latest, 1.0.0.15). Please use this if you need to deploy to stage (If left blank, new build and deploy to test will be made).'
+    )
+  }
+  stages {
+    stage('Setup') {
+      steps {
+        deleteDir()
+        checkout scm
+        echo "env.BRANCH_NAME ${env.gitlabSourceBranch} gitlabTargetBranch ${env.gitlabTargetBranch}"
+        // sh 'printenv'
+        script {
+          ws.init()
+          sh 'git rev-parse HEAD > commit'
+          GIT_COMMIT = readFile('commit').trim()
+          sh 'git config --get remote.origin.url > url'
+          GIT_URL = readFile('url').trim()
+          APP_NAME= build.getNodejsAppName()
+          APP_VERSION = build.getNodejsAppVersion()
+          if (RELEASE_VERSION == 'latest') {
+            APP_RELEASE_TAG="${APP_VERSION}.${BUILD_NUMBER}"
+          } else {
+            APP_RELEASE_TAG="${RELEASE_VERSION}"
+          }
+          echo "APP_NAME='${APP_NAME}', APP_VERSION='${APP_VERSION}', RELEASE_VERSION='${RELEASE_VERSION}', APP_RELEASE_TAG='${APP_RELEASE_TAG}''"
+          NODE_DIR="/prod/nodejs/wes/${STEWARDSHIP}"
+          PROJ_DIR="${NODE_DIR}/${APP_NAME}-${APP_RELEASE_TAG}"
+          if (currentBuild.description == null) {
+            currentBuild.description = ''
+          }
+          currentBuild.description = "${currentBuild.description} ${PIPELINE}: ${APP_RELEASE_TAG} ${TICKET}"
+        }
+      }
+    }
+    stage('Test') {
+      when {
+        anyOf {
+          environment name: 'gitlabActionType', value: 'MERGE'
+          expression { params.PIPELINE == 'TEST' }
+        }
+      }
+      steps {
+        updateGitlabCommitStatus name: 'Test', state: 'pending'
+        sh "npm cit"
+        sh "mv node_modules dev_node_modules &"
+        junit 'junit.xml'
+        
+        script {
+          mergeComments = sh(returnStdout: true, script: "cat console.md")
+        }
+        addGitLabMRComment comment: "${mergeComments}"
+      }
+      post {
+        success {
+          updateGitlabCommitStatus name: 'Test', state: 'success'
+        }
+        failure {
+          updateGitlabCommitStatus name: 'Test', state: 'failed'
+        }
+      }
+    }
+
+    stage('Build Image') {
+      when {
+        allOf {
+          not { environment name: 'gitlabActionType', value: 'MERGE' }
+          expression { params.PIPELINE == 'TEST' }
+          expression { params.RELEASE_VERSION == 'latest'}
+        }
+      }
+      steps {
+        sh """
+          echo 'Build Number: ' ${BUILD_NUMBER} > current.version.txt
+          echo 'Git Commit: ' ${GIT_COMMIT} >> current.version.txt
+          echo 'App Release Tag: ' ${APP_RELEASE_TAG} >> current.version.txt
+          echo 'App Version: ' ${APP_VERSION} >> current.version.txt
+          echo 'Created On: '`date` >> current.version.txt
+          
+          npm ci --production
+          du -sh *
+        """
+
+        script {
+          echo "Building Docker Image for ${APP_NAME}"
+          ose.dockerLoginDev()
+          def now = new Date()
+          def createdDate = now.format("yyyy-MM-dd'T'HH:mm:ssZ")
+          sh """
+            sudo docker build \
+             -t ${DOCKER_REGISTRY}/${APP_NAME}:latest \
+             -t ${DOCKER_REGISTRY}/${APP_NAME}:${APP_RELEASE_TAG} . \
+             --label "org.opencontainers.image.revision=${GIT_COMMIT}" \
+             --label "org.opencontainers.image.created=${createdDate}" \
+             --label "org.opencontainers.image.source=${GIT_URL}" \
+             --label "org.opencontainers.image.version=${APP_RELEASE_TAG}"
+            sudo docker push ${DOCKER_REGISTRY}/${APP_NAME}
+            
+            sudo docker images -a | grep ${APP_NAME}
+            sudo docker images -a | grep ${APP_NAME} | sed -n '1!p' | awk '{print \$3}' | uniq | xargs -r sudo /usr/bin/docker rmi -f
+	    
+	    mkdir tmp
+            tar -zc -f ./tmp/${APP_NAME}-${APP_RELEASE_TAG}.gz --exclude-from=.dockerignore --exclude=tmp .
+          """
+        }
+      }
+    }
+    stage('Deploy: test') {
+      when {
+        allOf {
+          not { environment name: 'gitlabActionType', value: 'MERGE' }
+          expression { params.PIPELINE == 'TEST' }
+        }
+      }
+      parallel {
+        stage('Deploy: test-lnx') {
+          steps {
+            sh """
+              rsync -a ./tmp/${APP_NAME}-${APP_RELEASE_TAG}.gz ${TEST_ACCOUNT1}:${NODE_DIR}
+              ssh ${TEST_ACCOUNT1} "mkdir -p ${PROJ_DIR} && tar -xf ${NODE_DIR}/${APP_NAME}-${APP_RELEASE_TAG}.gz -C ${PROJ_DIR} &&\
+                ln -nsf ${NODE_DIR}/${APP_NAME}-${APP_RELEASE_TAG}.gz ${NODE_DIR}/${APP_NAME}-latest.gz &&\
+                mv ${NODE_DIR}/${APP_NAME} ${NODE_DIR}/${APP_NAME}_old || true && mv ${PROJ_DIR} ${NODE_DIR}/${APP_NAME} &&\
+                PM2_HOME=/prod/nodejs/wes/${STEWARDSHIP}/.pm2 pm2 reload ${NODE_DIR}/process.json --only ${APP_NAME} --update-env &&\
+                rm -rf ${NODE_DIR}/${APP_NAME}_old"
+            """
+          }
+        }
+        stage('Deploy: test-ose') {
+          steps {
+            sh """
+                    ose.dockerLoginDev()
+                    oc process -f ./cfg/deploytemplate.yml -p TAG=${APP_RELEASE_TAG} --param-file=./cfg/${PROP_PREFIX}.app.properties --param-file=./cfg/app.properties -n=${TEST_PROJECT_NAME} > deployconfig.yml
+                    oc apply -f deployconfig.yml
+                    oc set image dc/${APP_NAME} ${APP_NAME}=${TEST_PROJECT_NAME}/${APP_NAME}:${APP_RELEASE_TAG} --source=imagestreamtag -n=${TEST_PROJECT_NAME}
+                    /bin/oc rollout latest dc/${APP_NAME} -n=${TEST_PROJECT_NAME}
+                    oc rollout status dc/${APP_NAME} --watch=true -n=${TEST_PROJECT_NAME} 
+            }
+          }
+        }
+      }
+    }
+  post {
+    always {
+      script {
+        emailSubject = (env.gitlabActionType == 'MERGE') ? "MERGE Build status ${currentBuild.currentResult}" : "Jenkins ${params.PIPELINE} Deploy"
+        passVal = (currentBuild.currentResult == 'SUCCESS') ? "Passing" : "Failing"
+        emailBody1 = (env.gitlabActionType == 'MERGE') ? "<h3>Merge request by ${gitlabUserName} is ${passVal}</h3>" : "<h3>${params.PIPELINE} Deploy</h3>"
+        emailBody1 += (env.gitlabActionType == 'MERGE') ? "<pre>${mergeComments}</pre>" : ""
+        emailBody = "<p>${emailBody1} <h4>${currentBuild.fullDisplayName} status: ${currentBuild.currentResult}</h4>"
+        if(currentBuildExtended.changeSets.size() > 0) {
+	        emailBody += "<dl><dt><b>Commits in this Build :</b></dt>"
+	        for (changeSet in currentBuildExtended.changeSets) {
+              emailBody += "<dd><li>${changeSet.author} : <b>${changeSet.comment}</b></li></dd>"
+          }
+          emailBody += "</dl>"
+        }
+        emailBody += "<p>Build took ${currentBuild.durationString}</p>"
+        emailBody += "<p>${env.BUILD_URL}console</p>"
+      }
+      mail(to: "${MAIL_TO}",
+        subject: "${emailSubject} ${currentBuild.fullDisplayName}",
+        mimeType: 'text/html',
+        body: "${emailBody}"
+      )
+      cleanWs()
+    }
+  }
+}
