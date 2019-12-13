@@ -1,0 +1,38 @@
+[    
+    {
+		"ParameterKey": "VpcId",
+		"ParameterValue": "vpc-8823bbef"
+	},
+    {
+		"ParameterKey": "LumerisSG",
+		"ParameterValue": "sg-e5753b9e, sg-f4743a8f"
+	},
+    {
+		"ParameterKey": "Subnets",
+		"ParameterValue": "subnet-4ea37737"
+	},
+    {
+		"ParameterKey": "InstanceType",
+		"ParameterValue": "t2.large"
+	},
+    {
+		"ParameterKey": "KeyName",
+		"ParameterValue": "devops-key"
+	},
+    {
+		"ParameterKey": "IamInstanceProfile",
+		"ParameterValue": "Devops-EC2-S3"
+	},
+    {
+		"ParameterKey": "S3Bucket",
+		"ParameterValue": "devops-nonprod"
+	},
+	{
+		"ParameterKey": "IIS",
+		"ParameterValue": "install-iis.ps1"
+	},
+    {
+		"ParameterKey": "ImageId",
+		"ParameterValue": "ami-7f70f907"
+	}
+]

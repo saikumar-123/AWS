@@ -1,0 +1,235 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+
+  "Description" : "AWS CloudFormation Sample Template for launching iis instance.",
+
+  "Parameters" : {
+
+    "VpcId" : {
+      "Type" : "AWS::EC2::VPC::Id",
+      "Description" : "VpcId of your existing Virtual Private Cloud (VPC)",
+      "ConstraintDescription" : "must be the VPC Id of an existing Virtual Private Cloud."
+    },
+    "LumerisSG":{
+      "Type" : "List<AWS::EC2::SecurityGroup::Id>",
+      "Description" : "The list of SG's"
+    },
+
+    "Subnet" : {
+      "Type" : "AWS::EC2::Subnet::Id",
+      "Description" : "The list of SubnetIds in your Virtual Private Cloud (VPC)",
+      "ConstraintDescription" : " The subnet should be residing in the selected Virtual Private Cloud."
+    },
+
+    "InstanceType" : {
+      "Description" : "WebServer EC2 instance type",
+      "Type" : "String",
+      "Default" : "t2.small",
+      "AllowedValues" : [ "t1.micro", "t2.nano", "t2.micro", "t2.small", "t2.medium", "t2.large", "m1.small", "m1.medium", "m1.large", "m1.xlarge", "m2.xlarge", "m2.2xlarge", "m2.4xlarge", "m3.medium", "m3.large", "m3.xlarge", "m3.2xlarge", "m4.large", "m4.xlarge", "m4.2xlarge", "m4.4xlarge", "m4.10xlarge", "c1.medium", "c1.xlarge", "c3.large", "c3.xlarge", "c3.2xlarge", "c3.4xlarge", "c3.8xlarge", "c4.large", "c4.xlarge", "c4.2xlarge", "c4.4xlarge", "c4.8xlarge", "g2.2xlarge", "g2.8xlarge", "r3.large", "r3.xlarge", "r3.2xlarge", "r3.4xlarge", "r3.8xlarge", "i2.xlarge", "i2.2xlarge", "i2.4xlarge", "i2.8xlarge", "d2.xlarge", "d2.2xlarge", "d2.4xlarge", "d2.8xlarge", "hi1.4xlarge", "hs1.8xlarge", "cr1.8xlarge", "cc2.8xlarge", "cg1.4xlarge"]
+,
+      "ConstraintDescription" : "must be a valid EC2 instance type."
+    },
+
+    "KeyName" : {
+      "Description" : "The EC2 Key Pair to allow SSH access to the instances",
+      "Type" : "AWS::EC2::KeyPair::KeyName",
+      "ConstraintDescription" : "must be the name of an existing EC2 KeyPair."
+    },
+    "IamInstanceProfile": {
+        "Description": "Name of IAM Profile that will be used by instances to access AWS Services",
+        "Type": "String",
+        "Default": "arn:aws:iam::728748506156:instance-profile/Devops-EC2-S3"
+    },
+
+    "RDPConnection" : {
+      "Description" : "The IP address range that can be used to RDP to the EC2 instances",
+      "Type": "String",
+      "MinLength": "9",
+      "MaxLength": "18",
+      "Default": "0.0.0.0/0",
+      "AllowedPattern": "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})",
+      "ConstraintDescription": "must be a valid IP CIDR range of the form x.x.x.x/x."
+    },
+    "S3Bucket": {
+      "Description": "Bucket to download deployment from",
+      "Type": "String",
+      "Default": "devops-nonprod"
+    },
+    "chocolatey": {
+      "Description": "Build number that is going to be deployed for firebird service",
+      "Type": "String",
+      "Default": "install-chocolatey.ps1"
+    },
+    "IIS": {
+      "Description": "Build number that is going to be deployed for phoenix ui",
+      "Type": "String",
+      "Default": "install-iis.ps1"
+    },
+    "ImageId":{
+        "Type": "String",
+        "Default": "ami-20608e58"
+    }
+  },
+
+
+  "Resources" : {
+
+    "CfnUser" : {
+      "Type" : "AWS::IAM::User",
+      "Properties" : {
+        "Path": "/",
+        "Policies": [{
+          "PolicyName": "root",
+          "PolicyDocument": { "Statement":[{
+            "Effect"   : "Allow",
+            "Action"   : [
+              "cloudformation:DescribeStackResource",
+              "s3:*",
+              "ec2:*"
+            ],
+            "Resource" :"*"
+          }]}
+        }]
+      }
+    },
+
+    "CfnKeys" : {
+      "Type" : "AWS::IAM::AccessKey",
+      "Properties" : {
+        "UserName" : {"Ref": "CfnUser"}
+      }
+    },
+
+    "BucketPolicy" : {
+      "Type" : "AWS::S3::BucketPolicy",
+      "Properties" : {
+        "PolicyDocument": {
+          "Version"      : "2008-10-17",
+          "Id"           : "MyPolicy",
+          "Statement"    : [{
+            "Sid"        : "WriteAccess",
+            "Action"     : ["s3:*"],
+            "Effect"     : "Allow",
+            "Resource"   : { "Fn::Join" : ["", ["arn:aws:s3:::", { "Ref" : "S3Bucket" }, "/*"]]},
+            "Principal"  : { "AWS": {"Fn::GetAtt" : ["CfnUser", "Arn"]} }
+          }]
+        },
+        "Bucket" : { "Ref" : "S3Bucket" }
+      }
+    },
+    
+    "WebServerLC" : {
+      "Type" : "AWS::AutoScaling::LaunchConfiguration",
+      "DependsOn" : "BucketPolicy",
+      "Metadata" : {
+        "PhoenixBuild" : { "Ref" : "PhoenixBuild" },
+        "FireBuild" : { "Ref" : "FireBuild" },
+
+        "Comment" : "Install a IIS ",
+        "AWS::CloudFormation::Authentication" : {
+          "S3AccessCreds" : {
+            "type" : "S3",
+            "accessKeyId" : { "Ref" : "CfnKeys" },
+            "secretKey" : {"Fn::GetAtt": ["CfnKeys", "SecretAccessKey"]},
+            "buckets" : [ { "Ref" : "S3Bucket" } ]
+          }
+        },
+        "AWS::CloudFormation::Init": {
+          "config" : {
+              "sources": {
+                  "C:\\Tools": {
+                    "Fn::Join": [
+                      "/",
+                      [
+                        "https://s3-us-west-2.amazonaws.com",
+                        {
+                          "Ref": "S3Bucket"
+                        },
+                        
+                        {
+                          "Ref": "chocolatey"
+                        }
+                    
+                      ]
+                    ]
+                  },
+                  "C:\\Tools": {
+                    "Fn::Join": [
+                      "/",
+                      [
+                        "https://s3-us-west-2.amazonaws.com",
+                        {
+                          "Ref": "S3Bucket"
+                        },
+                        
+                        {
+                          "Ref": "IIS"
+                        }
+                    
+                      ]
+                    ]
+                  }
+                  }
+                
+                
+        }
+        
+        }
+    },
+        
+      "Properties" : {
+        "KeyName" : { "Ref" : "KeyName" },
+        "ImageId" : { "Ref" : "ImageId"},
+        "SecurityGroups" : [ { "Ref" : "InstanceSecurityGroup" }  ],
+        "IamInstanceProfile": {
+          "Ref": "IamInstanceProfile"
+      },
+        "InstanceType" : { "Ref" : "InstanceType" },
+        "UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
+            "<powershell>\n",
+            "C:\\Tools\\install-chocolatey.ps1",
+            "C:\\Tools\\install-iis.ps1",
+            "cfn-signal.exe --stack ", {"Ref" : "AWS::StackId"}, " --resource WebServerLC --region ", {"Ref" : "AWS::Region"}, "\n",
+            "</powershell>"
+        ]]}}
+      }
+    },
+
+    "InstanceSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "Enable RDP access and HTTP from the load balancer only",
+        "SecurityGroupIngress" : [ 
+          {
+            "IpProtocol" : "tcp",
+            "FromPort" : "3389",
+            "ToPort" : "3389",
+            "CidrIp" : { "Ref" : "RDPConnection"}
+          },
+          {
+            "IpProtocol" : "ICMP",
+            "FromPort" : "-1",
+            "ToPort" : "-1",
+            "CidrIp" : { "Ref" : "RDPConnection"}
+          },
+          
+                
+        {
+          "IpProtocol" : "tcp",
+          "FromPort" : "80",
+          "ToPort" : "80",
+          "CidrIp" : { "Ref" : "RDPConnection"}
+          
+        } ],
+        "VpcId" : { "Ref" : "VpcId" }
+      }
+    },
+
+  "Outputs" : {
+    "InstanceId" : {
+        "Description": "InstanceId of the newly created EC2 instance",
+        "Value" : { "Ref": "EC2Instance" }
+      }
+      
+  }
+}
