@@ -1,0 +1,111 @@
+---
+- hosts: all
+   
+
+  tasks:
+
+    - name: Import service Manager
+      win_shell: Import-Module ServerManager
+
+    #- name: Turn Off IPV6 on all NICs
+      #win_shell: Set-NetAdapterBinding -Name "*" -DisplayName "Internet Protocol Version 6 (TCP/IPv6)" -Enabled:$false
+       
+    #- name: Turns off Enable LMHOSTS Lookup on all NICs
+      #win_shell: |
+        #$nic = [wmiclass]'Win32_NetworkAdapterConfiguration'
+        #$nic.enablewins($false,$false)
+
+    - name: Call Disable Network Adapter PnP Capabilities Setting Script
+      win_get_url:
+        url: https://s3-us-west-2.amazonaws.com/iypa-s3-filerepogp/Ansible/DisableNetworkAdapterPnPCapabilities.ps1
+        dest: C:\Tools\scripts\DisableNetworkAdapterPnPCapabilities.ps1
+
+    - name: Run PnP powershell
+      win_shell: C:\Tools\scripts\DisableNetworkAdapterPnPCapabilities.ps1        
+      
+    - name: Disable Indexing on all drives
+      win_shell: gwmi Win32_Volume -Filter "IndexingEnabled=$true" | swmi -Arguments @{IndexingEnabled=$false}  
+
+    - name: Allow all MMC snap-ins to connect from remote
+      win_shell: Enable-NetFirewallRule -DisplayGroup 'Windows Remote Management'
+
+   # - name: Disable all firewall
+    #  win_shell: Set-NetFirewallProfile -Profile * -Enabled False
+    
+
+    #- name: Set timezone to 'Central Standard Time' (GMT-06:00)
+      #win_timezone:
+        #timezone: Central Standard Time
+
+    - name: Change Drive Letter on DVD Drive to Z
+      win_shell: gwmi Win32_Volume -Filter "DriveType = '5'" | swmi -Arguments @{DriveLetter = 'Z:'}
+
+   # - name: Install Windows Roles and Features 
+     # win_feature:
+       # name: NET-Framework-Features,NET-Framework-Core,NET-HTTP-Activation,Multipath-IO,RDC
+       # state: present
+
+    - name: Install SNMP Service 
+      win_feature:
+        name: SNMP-Service,SNMP-WMI-Provider
+        state: present
+
+    - name: Uninstall SMB Service
+      win_feature:
+        name: FS-SMB1
+        state: absent
+    
+    - name: Uninstall CFN-BOOTSTRAP 1.4.27
+      win_package:
+        product_id: '{16567AAE-2636-4043-973D-A5A22B}'
+        state: absent
+
+    - name: Uninstall CFN-BOOTSTRAP 1.4.30
+      win_package:
+        product_id: '{40201097-3480-43F7-B3C0-EBD0342}'
+        state: absent
+
+    - name: Uninstall CFN-BOOTSTRAP 1.4.29
+      win_package:
+        product_id: '{4A5E6322-08F4-4062-94E4-00127D6B}'
+        state: absent
+
+    - name: Uninstall CFN-BOOTSTRAP 1.4.19
+      win_package:
+        product_id: '{59048426-10D1-44C3-937F-6FDB47B}'
+        state: absent
+
+    - name: Uninstall CFN-BOOTSTRAP 1.4.27
+      win_package:
+        product_id: '{7AC6561D-121E-4FD8-B953-C8B9FBB}'
+        state: absent
+
+    - name: Uninstall CFN-BOOTSTRAP 1.4.18
+      win_package:
+        product_id: '{7F7DFDA0-6D2E-468E-B2D8-09ED2E27}'
+        state: absent
+
+    - name: Uninstall CFN-BOOTSTRAP 1.4.21
+      win_package:
+        product_id: '{A29DF67D-CB86-4599-8DE5-CF2E67E8}'
+        state: absent
+
+    - name: Uninstall CFN-BOOTSTRAP 1.4.24
+      win_package:
+        product_id: '{D75664C7-34AD-4533-94BB-044C2BEB}'
+        state: absent
+
+      
+    - name: Set Power plan to High performance
+      win_shell: powercfg.exe /SETACTIVE 8c5e7fda-e8bf-4a96-9a85-a6e235c
+
+    - name: Call Disable Network Adapter PnP Capabilities Setting Script
+      win_get_url:
+        url: https://s3-us-west-2.amazonaws.com/iypa-s3-filerepogp/Ansible/AdjustVirtualMemoryPagingFileSize.psm1
+        dest: C:\Tools\scripts\AdjustVirtualMemoryPagingFileSize.psm1
+
+    - name: Import Module and run Pagefile Settings update
+      win_shell: |
+        Import-Module C:\Tools\scripts\AdjustVirtualMemoryPagingFileSize.psm1
+        Set-OSCVirtualMemory -SystemManagedSize -DriveLetter "C:"
+

@@ -1,0 +1,24 @@
+---
+- hosts: all
+   
+
+  tasks:
+    - name: create Tools Folder
+      win_file:
+        path: C:\Tools
+        state: directory
+
+    - name: create Tools Folder
+      win_file:
+        path: C:\Tools\scripts
+        state: directory
+
+
+    - name: Copy Hardening Setting Script
+      win_get_url:
+        url: https://s3-us-west-2.amazonaws.com/iypa-s3-filerepogp/Ansible/WS2016Optimisations.ps1
+        dest: C:\Tools\scripts\WS2016Optimisations.ps1
+
+    - name: Run Hardnening powershell script
+      win_shell: C:\Tools\scripts\WS2016Optimisations.ps1
+   

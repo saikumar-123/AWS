@@ -1,0 +1,17 @@
+---
+- hosts: all
+   
+
+  tasks:
+
+    - name: Copy symentaic AV 
+      win_get_url:
+        url: https://s3-us-west-2.amazonaws.com/iypa-s3-filerepogp/Ansible/setup.exe
+        dest: C:\Tools\setup.exe
+        force: no
+
+    - name: Install Symantic AV
+      win_package:
+        path: C:\Tools\setup.exe
+        product_id: '{50A92270-BA3C-4ED0-997F-6394E3F29FE5}'
+        arguments: /s 

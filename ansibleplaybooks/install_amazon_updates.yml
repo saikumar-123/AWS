@@ -1,0 +1,64 @@
+---
+- hosts: all
+   
+
+  tasks:
+
+    - name: create Tools Folder
+      win_file:
+        path: C:\Tools
+        state: directory
+
+    - name: create Tools Folder
+      win_file:
+        path: C:\Tools\scripts
+        state: directory
+
+   # - name: Update_AmazonSSM_Agent
+     # win_get_url:
+      #  url: 'https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/windows_amd64/AmazonSSMAgentSetup.exe'
+      #  dest: 'C:\Tools\AmazonSSMAgentSetup.exe'
+      #  force: no
+
+   # - name: Install AmazonSSM_Agent
+    #  win_package:
+     #   path: C:\Tools\AmazonSSMAgentSetup.exe
+      #  product_id: '{8BC30ADE-2C4A-4F63-89B7-892CABEDD25B}'
+      #  arguments:
+      #    - /install
+      #    - /quiet
+      #    - /norestart
+
+    - name: EC2-Windows-Launch
+      win_get_url:
+        url: 'https://s3.amazonaws.com/ec2-downloads-windows/EC2Launch/latest/EC2-Windows-Launch.zip'
+        dest: 'C:\Tools\EC2-Windows-Launch.zip'
+        force: no
+
+    #- name: Recursively decompress GZ files in EC2-Windows-Launch.zip
+     # win_unzip:
+      #  src: C:\Tools\EC2-Windows-Launch.zip
+      #  dest: C:\Tools
+      #  recurse: yes
+
+
+    - name: EC2-Windows-Launch
+      win_get_url:
+        url: 'https://s3.amazonaws.com/ec2-downloads-windows/EC2Launch/latest/install.ps1'
+        dest: 'C:\Tools\install.ps1'
+        force: no
+
+    - name: install EC2-Windows-Launch
+      win_shell: C:\Tools\install.ps1
+
+    - name: COPY AWS CLI
+      win_get_url:
+        url: 'https://s3.amazonaws.com/aws-cli/AWSCLI64.msi'
+        dest: 'c:\Tools\scripts\AWSCLI64.msi'
+        force: no
+
+    - name: install AWSCLI
+      win_msi:
+        path: c:\Tools\scripts\AWSCLI64.msi
+        wait: yes
+
